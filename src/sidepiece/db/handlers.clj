@@ -19,6 +19,45 @@
      (get-query-for-musician-id-by-key-and-value :musician/name name)
      (db)))))
 
+(defn time-block-exists?
+  [time-block-hash]
+  (let [query-result (d/q {:query '[:find ?c
+                                    :keys time-block-eid
+                                    :in $ ?time-block-hash
+                                    :where
+                                    [?c :calendar/time-block-hash-id ?time-block-hash]]
+                           :args [(db/db) time-block-hash]})]
+    (println query-result)
+    (if (= [] query-result)
+      false
+      true)))
+
+(defn generate-time-block-tx-data
+  [calendar musician-id status]
+  (let [minute (.get calendar java.util.Calendar/MINUTE)
+        hour (.get calendar java.util.Calendar/HOUR_OF_DAY)
+        day (.get calendar java.util.Calendar/DAY_OF_MONTH)
+        month (.get calendar java.util.Calendar/MONTH)
+        year (.get calendar java.util.Calendar/YEAR)
+        minute-keyword (get s/minutes-keyword-map (s/get-minutes-key minute))
+        hour-keyword (get s/hours-keyword-map (str hour))
+        day-keyword (get s/days-keyword-map (str day))
+        month-keyword (get s/months-keyword-map (str month))
+        year-keyword (get s/years-keyword-map (str year))
+        time-block-hash (hash [year-keyword month-keyword day-keyword hour-keyword minute-keyword])
+        time-block-map {:calendar/time-block-minute minute-keyword
+                        :calendar/time-block-hour hour-keyword
+                        :calendar/time-block-day day-keyword
+                        :calendar/time-block-month month-keyword
+                        :calendar/time-block-year year-keyword 
+                        :calendar/time-block-musician-id musician-id
+                        :calendar/time-block-status status}]
+    (println time-block-hash)
+    (if (time-block-exists? time-block-hash)
+      (assoc time-block-map :db/id [:calendar/time-block-hash-id time-block-hash])
+      (assoc time-block-map :calendar/time-block-hash-id time-block-hash))))
+
+
 (defn transform-calendar-to-time-block-keywords
   [calendar]
   (let [minute (.get calendar java.util.Calendar/MINUTE)
@@ -26,34 +65,60 @@
         day (.get calendar java.util.Calendar/DAY_OF_MONTH)
         month (.get calendar java.util.Calendar/MONTH)
         year (.get calendar java.util.Calendar/YEAR)
-        time-block-map {:calendar/time-block-minute (get s/minutes-keyword-map (s/get-minutes-key minute))
-                        :calendar/time-block-hour (get s/hours-keyword-map (str hour))
-                        :calendar/time-block-day (get s/days-keyword-map (str day))
-                        :calendar/time-block-month (get s/months-keyword-map (str month))
-                        :calendar/time-block-year (get s/years-keyword-map (str year))}]
+        minute-keyword (get s/minutes-keyword-map (s/get-minutes-key minute))
+        hour-keyword (get s/hours-keyword-map (str hour))
+        day-keyword (get s/days-keyword-map (str day))
+        month-keyword (get s/months-keyword-map (str month))
+        year-keyword (get s/years-keyword-map (str year))
+        time-block-map {:calendar/time-block-minute minute-keyword
+                        :calendar/time-block-hour hour-keyword
+                        :calendar/time-block-day day-keyword
+                        :calendar/time-block-month month-keyword
+                        :calendar/time-block-year year-keyword}]
     time-block-map))
 
-(defn generate-time-blocks-for-timestamp-range-for-musician-id-with-status
+(defn generate-time-block-tx-data-for-block-count
   [timestamp-start block-count musician-id status]
   (map
    (fn [count] (let [calendar (i/read-instant-calendar timestamp-start)]
-                 (.add calendar java.util.Calendar/MINUTE (* count 30))
-                 (assoc
-                  (transform-calendar-to-time-block-keywords calendar)
-                  :calendar/time-block-musician-id musician-id
-                  :calendar/time-block-status status)))
+                 (.add calendar java.util.Calendar/MINUTE (* count 30)) 
+                 (generate-time-block-tx-data calendar musician-id status)))
    (range block-count)))
 
-(defn add-availability-block-for-musician-id
-  [timestamp-start block-count musician-id]
-  (let [block-data (generate-time-blocks-for-timestamp-range-for-musician-id-with-status
+(defn add-block-with-status-for-musician-id
+  [timestamp-start block-count musician-id block-status]
+  (let [block-data (generate-time-block-tx-data-for-block-count
                     timestamp-start
                     block-count
                     musician-id
-                    :calendar/time-block-available)]
+                    block-status)]
     (db/transact-all db/conn [block-data])))
 
-(defn find-musician-ids-available-at-timestamp-5
+(defn add-availability-block-for-musician-id
+  [timestamp-start block-count musician-id]
+  (add-block-with-status-for-musician-id
+   timestamp-start
+   block-count
+   musician-id
+   :calendar/time-block-available))
+
+(defn add-booked-block-for-musician-id
+  [timestamp-start block-count musician-id]
+  (add-block-with-status-for-musician-id
+   timestamp-start
+   block-count
+   musician-id
+   :calendar/time-block-booked))
+
+(defn add-pending-block-for-musician-id
+  [timestamp-start block-count musician-id]
+  (add-block-with-status-for-musician-id
+   timestamp-start
+   block-count
+   musician-id
+   :calendar/time-block-pending))
+
+(defn find-musician-ids-available-at-timestamp
   [timestamp]
   (let [timestamp-block (transform-calendar-to-time-block-keywords (i/read-instant-calendar timestamp))]
     (d/q {:query '[:find ?musician-id
@@ -94,25 +159,6 @@
                  [?c :calendar/time-block-status :calendar/time-block-available]]
         :args [(db/db) musician-id]}))
 
-;; (defn generate-booking-id-assertion-for-musician-ids
-;;   [musician-ids booking-id]
-;;   (reduce
-;;    (fn [assertion musician-id]
-;;      (conj assertion {:musician/id musician-id :musician/booking-id booking-id}))
-;;    []
-;;    musician-ids))
-
-(defn add-booking
-  [booking]
-  (let [booking-id (java.util.UUID/randomUUID)
-        booking-calendar-schema (assoc booking :calendar/booking-id booking-id)
-        ;; musician-booking-id-assertion (generate-booking-id-assertion-for-musician-ids (:calendar/booked-musician-ids booking) booking-id)
-        ]
-    (db/transact-all db/conn [[booking-calendar-schema] 
-                            ;;   musician-booking-id-assertion
-                              ])
-    booking-id))
-
 
 (def bookings
   [;;bob's gigs
@@ -128,5 +174,13 @@
 
 (defn add-init-bookings
   []
-  (map add-booking bookings)
-  (add-availability-block-for-musician-id "2025-04-12T23:20:50.52Z" 5 #uuid "288ffd20-970d-45a7-b728-80e905da612e"))
+  (add-availability-block-for-musician-id 
+   "2025-04-12T23:20:50.52Z" 
+   5 
+   #uuid "288ffd20-970d-45a7-b728-80e905da612e"))
+
+;; (h/add-booked-block-for-musician-id
+;;  "2025-04-12T23:20:50.52Z"
+;;  5
+;;  #uuid "288ffd20-970d-45a7-b728-80e905da612e")
+

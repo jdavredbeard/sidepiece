@@ -203,7 +203,11 @@
      :db/cardinality :db.cardinality/one}
     {:db/ident :calendar/time-block-musician-id
      :db/valueType :db.type/uuid
-     :db/cardinality :db.cardinality/one}]
+     :db/cardinality :db.cardinality/one}
+    {:db/ident :calendar/time-block-hash-id
+     :db/valueType :db.type/long
+     :db/cardinality :db.cardinality/one
+     :db/unique :db.unique/identity}]
 
    (create-refs-in-keyword-space
     (create-keywords-in-space "calendar" ["time-block-booked"
